@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Routing 滚动看板 V8.0 (多重异常)</title>
+    <style>
+        /* 样式与 V7.4 基本一致，对任务部分进行了微调以适应多行 */
+        body { font-family: 'Microsoft YaHei', sans-serif; padding: 15px; background-color: #eef2f5; margin: 0; display: flex; flex-direction: column; height: calc(100vh - 30px); overflow: hidden;}
+        #alertBanner { display: none; background-color: #ff4d4f; color: white; padding: 12px 20px; border-radius: 8px; margin-bottom: 15px; font-weight: bold; box-shadow: 0 4px 12px rgba(255, 77, 79, 0.3); align-items: center; justify-content: space-between; cursor: pointer; transition: 0.3s; flex-shrink: 0;}
+        .alert-content { display: flex; align-items: center; gap: 10px; }
+        .btn-close-alert { background: rgba(255,255,255,0.2); border: 1px solid white; color: white; padding: 4px 10px; border-radius: 4px; cursor: pointer; }
+        .header { display: flex; justify-content: space-between; align-items: center; background: white; padding: 15px 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 15px; flex-wrap: wrap; gap: 10px; flex-shrink: 0;}
+        .header h2 { margin: 0; color: #333; font-size: 20px; }
+        .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;}
+        input[type="month"] { padding: 8px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 8px 15px; font-size: 14px; border: none; border-radius: 4px; cursor: pointer; transition: 0.3s; color: white; font-weight: bold;}
+        .btn-primary { background: #1890ff; }
+        .btn-success { background: #52c41a; }
+        .btn-warning { background: #fa8c16; }
+        .btn-toggle { background: #722ed1; }
+        .btn-toggle.off { background: #d9d9d9; color: #666; }
+
+        .main-container { display: flex; gap: 15px; flex-grow: 1; overflow: hidden; }
+        .calendar-wrapper { display: flex; overflow-x: auto; overflow-y: hidden; gap: 15px; padding-bottom: 10px; scrollbar-width: thin; scrollbar-color: #bbb #f0f0f0; scroll-behavior: smooth; flex-grow: 1; }
+        .calendar-wrapper::-webkit-scrollbar { height: 8px; }
+        .calendar-wrapper::-webkit-scrollbar-thumb { background: #bbb; border-radius: 4px; }
+        .day-card { min-width: 600px; width: 600px; background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); display: flex; flex-direction: column; height: 100%; }
+        .day-card.today { border: 2px solid #1890ff; }
+        .card-header { padding: 12px; border-bottom: 1px solid #eee; font-weight: bold; text-align: center; background: #f8f9fa; flex-shrink: 0; border-radius: 8px 8px 0 0;}
+        .card-header .date-num { font-size: 20px; color: #333; margin-right: 5px; }
+        .day-card.today .card-header { background: #e6f7ff; color: #1890ff; }
+        
+        .task-list { padding: 6px 10px; overflow-y: auto; flex-grow: 1; display: flex; flex-direction: column; gap: 8px; }
+        .task-list::-webkit-scrollbar { width: 6px; }
+        .task-list::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px;}
+
+        /* 任务块外层 */
+        .task-item { 
+            display: flex; 
+            align-items: flex-start; 
+            background: #fff; 
+            border-radius: 4px; 
+            border: 1px solid #ebeef5; 
+            padding: 6px; 
+            transition: all 0.3s; 
+            flex-shrink: 0; 
+            box-sizing: border-box;
+        }
+        
+        /* 主信息区（左侧） */
+        .task-main-info { display: flex; align-items: center; height: 32px; flex-shrink: 0; margin-right: 8px;}
+        .task-checkbox { width: 16px; height: 16px; margin: 0 8px 0 0; cursor: pointer; accent-color: #52c41a; }
+        .task-left-flat { display: flex; align-items: center; width: 170px; flex-shrink: 0; overflow: hidden;}
+        .task-time-input { font-size: 11px; color: #888; border: none; background: transparent; width: 70px; outline: none; flex-shrink: 0;}
+        .task-name-input { font-weight: bold; font-size: 13px; color: #333; border: none; background: transparent; width: 100px; outline: none; }
+
+        /* 右侧记录列表区 */
+        .task-records-area { flex-grow: 1; display: flex; flex-direction: column; gap: 4px; }
+        .record-row { display: flex; align-items: center; height: 32px; }
+        
+        .task-record-input { flex: 1; min-width: 80px; border: 1px solid transparent; background: transparent; font-size: 13px; padding: 4px 6px; outline: none; border-radius: 4px; transition: 0.3s;}
+        .task-record-input:hover, .task-record-input:focus { border-color: #dcdfe6; background: #fafafa; }
+        
+        .task-owner-input { width: 60px; border: none; border-bottom: 1px solid transparent; font-size: 12px; padding: 2px; outline: none; margin-right: 8px; flex-shrink: 0; background: transparent; text-align: center; transition: 0.3s;}
+        .task-due-input { width: 135px; border: none; border-bottom: 1px solid transparent; font-size: 11px; padding: 2px; outline: none; margin-right: 8px; flex-shrink: 0; background: transparent; transition: 0.3s;}
+        .task-owner-input:focus, .task-due-input:focus, .task-owner-input:hover, .task-due-input:hover { border-bottom-color: #1890ff; background: white; }
+
+        .btn-del-record { background: none; color: #ccc; font-size: 14px; border: none; cursor: pointer; padding: 0; transition: 0.3s; flex-shrink: 0;}
+        .btn-del-record:hover { color: #ff4d4f; }
+
+        .btn-add-record { background: transparent; color: #1890ff; border: none; font-size: 12px; cursor: pointer; text-align: left; padding: 0; margin-top: 4px; width: max-content; transition: 0.3s;}
+        .btn-add-record:hover { text-decoration: underline; }
+
+        /* 整体状态高亮 */
+        .task-item.completed { background-color: #f9f9f9; border-color: #e8e8e8; opacity: 0.8;}
+        .task-item.completed .task-name-input, .task-item.completed .task-record-input { text-decoration: line-through; color: #999; }
+        
+        .task-item.exception { border-color: #ffa39e; background: #fff1f0; }
+        .task-item.exception .task-name-input, .task-item.exception .task-record-input { color: #cf1322; font-weight: bold; }
+        
+        /* 单条记录逾期/到期高亮 (内层加红/黄底) */
+        .record-row.overdue { background-color: #ffe6e6; border-radius: 4px; }
+        .record-row.overdue input { color: #ff0000 !important; font-weight: bold !important;}
+        
+        .record-row.due-soon { background-color: #fffbe6; border-radius: 4px; }
+
+        /* 闪烁高亮 */
+        @keyframes flashRow { 0% { box-shadow: 0 0 0 2px #1890ff; background-color: #e6f7ff; } 100% { box-shadow: none; background-color: transparent; } }
+        .record-row.flash-record { animation: flashRow 1.5s ease-out 2; z-index: 10;}
+        
+        .task-item.flash { animation: flashRow 1.5s ease-out 2; }
+
+        .btn-add-task { background: #e6f7ff; color: #1890ff; border: 1px dashed #1890ff; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: bold; margin: 6px 10px 10px 10px; flex-shrink: 0; transition: 0.3s; }
+        .btn-add-task:hover { background: #bae7ff; }
+
+        /* 侧边栏样式保持不变 */
+        .sidebar { width: 320px; display: flex; flex-direction: column; gap: 15px; flex-shrink: 0; height: 100%; transition: all 0.3s ease; }
+        .sidebar.hidden { display: none; }
+        .side-panel { background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); display: flex; flex-direction: column; overflow: hidden; }
+        .side-panel.hidden { display: none; }
+        #taskPanel { flex: 3; } 
+        #memoPanel { flex: 2; }
+        .panel-header { padding: 15px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; background: #f8f9fa; flex-shrink: 0;}
+        .panel-header h3 { margin: 0; font-size: 16px; color: #333; display: flex; align-items: center; gap: 5px;}
+        .badge { background: #ff4d4f; color: white; font-size: 12px; padding: 2px 8px; border-radius: 10px; font-weight: bold;}
+        .badge.green { background: #52c41a; }
+        .panel-content { flex-grow: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+        .panel-content::-webkit-scrollbar { width: 6px; }
+        .panel-content::-webkit-scrollbar-thumb { background: #ddd; border-radius: 4px;}
+
+        .pending-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px; border: 1px solid #eee; border-radius: 6px; background: #fff; cursor: pointer; transition: 0.2s;}
+        .pending-item:hover { border-color: #1890ff; background: #f0f7ff; }
+        .pending-item.overdue-item { border-left: 3px solid #ff4d4f; }
+        .pending-item.soon-item { border-left: 3px solid #fa8c16; }
+        .pending-checkbox { width: 16px; height: 16px; margin-top: 3px; cursor: pointer; accent-color: #52c41a;}
+        .pending-info { flex-grow: 1; }
+        .pending-title { font-size: 13px; font-weight: bold; color: #333; margin-bottom: 4px; line-height: 1.4;}
+        .pending-meta { font-size: 11px; color: #888; display: flex; flex-wrap: wrap; gap: 8px;}
+        .pending-meta span.urgent { color: #ff4d4f; font-weight: bold;}
+
+        .memo-item { background: #fdfdcf; border: 1px solid #f0f0b0; border-radius: 6px; padding: 10px; position: relative; box-shadow: 1px 1px 3px rgba(0,0,0,0.05); transition: 0.3s;}
+        .memo-textarea { width: 100%; border: none; background: transparent; font-size: 13px; font-family: inherit; line-height: 1.5; resize: vertical; outline: none; color: #333; min-height: 40px;}
+        .btn-del-memo { position: absolute; top: 5px; right: 5px; background: none; border: none; color: #ccc; font-size: 14px; cursor: pointer; transition: 0.3s;}
+        .btn-add-memo { background: #722ed1; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; transition: 0.3s;}
+
+        /* 弹窗等保持原样 */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; justify-content: center; align-items: center; }
+        .modal-content { background: white; padding: 20px; border-radius: 8px; width: 90%; max-width: 500px; max-height: 85vh; overflow-y: auto; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 15px;}
+        .close-btn { background: none; border: none; font-size: 24px; cursor: pointer; color: #999; }
+        .alert-list-item { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; transition: 0.2s; display: flex; justify-content: space-between;}
+        .alert-list-item:hover { background-color: #f5f5f5; }
+        .alert-list-item.overdue-text { color: #ff4d4f; font-weight: bold; }
+        .alert-list-item.soon-text { color: #fa8c16; font-weight: bold; }
+        .config-section { margin-bottom: 25px; border: 1px solid #eee; border-radius: 8px; padding: 15px; background: #fafafa;}
+        .config-section h4 { margin-top: 0; margin-bottom: 15px; color: #333; border-left: 4px solid #1890ff; padding-left: 10px;}
+        .config-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+        .config-table th, .config-table td { border: 1px solid #ddd; padding: 8px; text-align: left; background: white; }
+        .config-table input, .config-table select { padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 90%;}
+        .add-row-btn { background: #fff; border: 1px dashed #1890ff; color: #1890ff; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 13px;}
+        .form-group { margin-bottom: 15px; display: flex; align-items: center; gap: 10px;}
+        .form-group input { padding: 6px; border: 1px solid #ccc; border-radius: 4px; }
+        .checkbox-group { display: flex; align-items: center; gap: 5px; margin-top: 10px; font-size: 14px; color: #cf1322;}
+    </style>
+</head>
+<body>
+
+<div id="alertBanner" onclick="openAlertListModal()">
+    <div class="alert-content"><span>⚠️</span><span id="alertText">有异常任务逾期或即将到期！(点击查看详情)</span></div>
+    <button class="btn-close-alert" onclick="event.stopPropagation(); document.getElementById('alertBanner').style.display='none'">× 隐藏</button>
+</div>
+
+<div class="header">
+    <h2>📋 Routing 看板 (V8.0 多重异常)</h2>
+    <div class="controls">
+        <label>选择月份：</label>
+        <input type="month" id="monthPicker">
+        <button class="btn-toggle" id="toggleTaskBtn" onclick="togglePanel('taskPanel')">📋 隐藏异常追踪</button>
+        <button class="btn-toggle" id="toggleMemoBtn" onclick="togglePanel('memoPanel')">📌 隐藏记事板</button>
+        <button class="btn-warning" onclick="openConfigModal()">⚙️ 模板管理</button>
+        <button class="btn-success" onclick="exportMonthCSV()">📤 导出Excel</button>
+    </div>
+</div>
+
+<div class="main-container">
+    <div class="calendar-wrapper" id="calendarWrapper"></div>
+    <div class="sidebar" id="sidebar">
+        <div class="side-panel" id="taskPanel">
+            <div class="panel-header"><h3>🚨 异常待办追踪 <span class="badge" id="pendingCount">0</span></h3></div>
+            <div class="panel-content" id="pendingList"></div>
+        </div>
+        <div class="side-panel" id="memoPanel">
+            <div class="panel-header"><h3>📌 长期记事板</h3><button class="btn-add-memo" onclick="addMemo()">+ 添加</button></div>
+            <div class="panel-content" id="memoList"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 弹窗 -->
+<div class="modal" id="alertListModal"><div class="modal-content"><div class="modal-header"><h3>⚠️ 异常任务预警列表</h3><button class="close-btn" onclick="closeModal('alertListModal')">&times;</button></div><p style="font-size: 13px; color: #666; margin-bottom: 10px;">点击下方任务可直接跳转：</p><div id="alertListContainer"></div></div></div>
+<div class="modal" id="configModal"><div class="modal-content" style="max-width: 800px;"><div class="modal-header"><h3>⚙️ 模板管理中心</h3><button class="close-btn" onclick="closeModal('configModal')">&times;</button></div><p style="font-size: 13px; color: #cf1322; margin-bottom: 20px; background: #fff1f0; padding: 10px; border-radius: 4px;">⚠️ 提示：修改模板后，只有勾选底部的选项才会重置本月未填写的日期。</p><div class="config-section"><h4>1. 每日固定任务</h4><table class="config-table" id="dailyTable"><thead><tr><th width="30%">时间段</th><th width="60%">事宜</th><th width="10%">操作</th></tr></thead><tbody></tbody></table><button class="add-row-btn" onclick="addConfigRow('daily')">+ 增加每日任务</button></div><div class="config-section"><h4>2. 每周固定任务</h4><table class="config-table" id="weeklyTable"><thead><tr><th width="25%">星期几</th><th width="30%">时间段</th><th width="35%">事宜</th><th width="10%">操作</th></tr></thead><tbody></tbody></table><button class="add-row-btn" onclick="addConfigRow('weekly')">+ 增加每周任务</button></div><div class="config-section"><h4>3. 每两周固定任务</h4><div class="form-group"><label>双周基准日：</label><input type="date" id="biweeklyBaseDate"></div><table class="config-table" id="biweeklyTable"><thead><tr><th width="25%">星期几</th><th width="30%">时间段</th><th width="35%">事宜</th><th width="10%">操作</th></tr></thead><tbody></tbody></table><button class="add-row-btn" onclick="addConfigRow('biweekly')">+ 增加双周任务</button></div><div class="config-section"><h4>4. 每月固定任务</h4><table class="config-table" id="monthlyTable"><thead><tr><th width="25%">每月几号</th><th width="30%">时间段</th><th width="35%">事宜</th><th width="10%">操作</th></tr></thead><tbody></tbody></table><button class="add-row-btn" onclick="addConfigRow('monthly')">+ 增加每月任务</button></div><div class="checkbox-group"><input type="checkbox" id="chkForceUpdate"><label for="chkForceUpdate">应用新模板时，强制重置本月所有【未填写】的日期数据。</label></div><div style="margin-top: 20px; text-align: right;"><button class="btn-primary" onclick="saveConfig()" style="padding: 10px 30px;">保存并应用</button></div></div></div>
+
+<script>
+    const calendarWrapper = document.getElementById('calendarWrapper');
+    const monthPicker = document.getElementById('monthPicker');
+    const today = new Date();
+    const currentMonthStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0');
+    monthPicker.value = currentMonthStr;
+
+    function initPanelState() {
+        const taskHidden = localStorage.getItem('routing_task_panel_hidden') === 'true';
+        const memoHidden = localStorage.getItem('routing_memo_panel_hidden') === 'true';
+        const taskPanel = document.getElementById('taskPanel'); const memoPanel = document.getElementById('memoPanel');
+        const sidebar = document.getElementById('sidebar'); const toggleTaskBtn = document.getElementById('toggleTaskBtn'); const toggleMemoBtn = document.getElementById('toggleMemoBtn');
+        if (taskHidden) { taskPanel.classList.add('hidden'); toggleTaskBtn.innerHTML = '📋 显示异常追踪'; toggleTaskBtn.classList.add('off'); }
+        if (memoHidden) { memoPanel.classList.add('hidden'); toggleMemoBtn.innerHTML = '📌 显示记事板'; toggleMemoBtn.classList.add('off'); }
+        if (taskHidden && memoHidden) sidebar.classList.add('hidden'); else sidebar.classList.remove('hidden');
+    }
+    function togglePanel(panelId) {
+        const panel = document.getElementById(panelId); const btn = panelId === 'taskPanel' ? document.getElementById('toggleTaskBtn') : document.getElementById('toggleMemoBtn'); const sidebar = document.getElementById('sidebar');
+        if (panel.classList.contains('hidden')) { panel.classList.remove('hidden'); btn.innerHTML = panelId === 'taskPanel' ? '📋 隐藏异常追踪' : '📌 隐藏记事板'; btn.classList.remove('off'); } 
+        else { panel.classList.add('hidden'); btn.innerHTML = panelId === 'taskPanel' ? '📋 显示异常追踪' : '📌 显示记事板'; btn.classList.add('off'); }
+        const taskHidden = document.getElementById('taskPanel').classList.contains('hidden'); const memoHidden = document.getElementById('memoPanel').classList.contains('hidden');
+        if (taskHidden && memoHidden) sidebar.classList.add('hidden'); else sidebar.classList.remove('hidden');
+        localStorage.setItem('routing_task_panel_hidden', taskHidden); localStorage.setItem('routing_memo_panel_hidden', memoHidden); 
+        const oldScrollLeft = calendarWrapper.scrollLeft;
+        setTimeout(() => { calendarWrapper.scrollLeft = oldScrollLeft; }, 10);
+    }
+
+    function loadMemos() {
+        const memos = JSON.parse(localStorage.getItem('routing_memos') || '[]'); const memoList = document.getElementById('memoList'); memoList.innerHTML = '';
+        if (memos.length === 0) { memoList.innerHTML = '<div style="text-align:center; color:#999; font-size:13px; margin-top:20px;">暂无备忘，点击右上角添加</div>'; return; }
+        memos.forEach((memo, index) => {
+            const div = document.createElement('div'); div.className = 'memo-item';
+            div.innerHTML = `<button class="btn-del-memo" onclick="deleteMemo(${index})" title="删除">✖</button><textarea class="memo-textarea" placeholder="输入备注内容..." onchange="updateMemo(${index}, this.value)">${memo}</textarea>`;
+            memoList.appendChild(div); setTimeout(() => { const ta = div.querySelector('.memo-textarea'); if(ta) { ta.style.height = 'auto'; ta.style.height = (ta.scrollHeight) + 'px'; } }, 0);
+        });
+    }
+    function addMemo() { const memos = JSON.parse(localStorage.getItem('routing_memos') || '[]'); memos.unshift(''); localStorage.setItem('routing_memos', JSON.stringify(memos)); loadMemos(); setTimeout(() => { const textareas = document.querySelectorAll('.memo-textarea'); if(textareas.length > 0) textareas[0].focus(); }, 50); }
+    function updateMemo(index, value) { const memos = JSON.parse(localStorage.getItem('routing_memos') || '[]'); memos[index] = value; localStorage.setItem('routing_memos', JSON.stringify(memos)); }
+    function deleteMemo(index) { if (!confirm('确定删除这条备忘吗？')) return; const memos = JSON.parse(localStorage.getItem('routing_memos') || '[]'); memos.splice(index, 1); localStorage.setItem('routing_memos', JSON.stringify(memos)); loadMemos(); }
+
+    const defaultConfig = {
+        dailyTasks: [ { time: '08:30-08:45', task: '检查邮件' }, { time: '08:45-09:00', task: '交接班记录' }, { time: '09:15-09:30', task: '巡线' }, { time: '09:30-09:45', task: '每日达成率回顾' }, { time: '10:00-10:30', task: 'QRQC会议' } ],
+        weeklyTasks: [{ day: 1, time: '09:00-09:15', task: '隔离区评审' }], biweeklyBaseDate: '2023-10-23', biweeklyTasks: [{ day: 2, time: '13:30-14:30', task: '双周设备深度保养' }], monthlyTasks: [{ day: 1, time: '09:00-10:00', task: '月初安全例会' }, { day: 28, time: '16:00-17:00', task: '月末盘点' }]
+    };
+    let currentConfig = null;
+    function loadConfig() { const saved = localStorage.getItem('routing_config_v6'); currentConfig = saved ? JSON.parse(saved) : JSON.parse(JSON.stringify(defaultConfig)); }
+
+    function getTasksForDate(dateObj) {
+        const dateStr = dateObj.getFullYear() + '-' + String(dateObj.getMonth() + 1).padStart(2, '0') + '-' + String(dateObj.getDate()).padStart(2, '0');
+        const dayOfWeek = dateObj.getDay(); const dayOfMonth = dateObj.getDate();
+        const savedData = localStorage.getItem('routing_v6_' + dateStr);
+        
+        if (savedData) { 
+            let tasks = JSON.parse(savedData); 
+            // 核心：老旧数据升级为 records 数组
+            tasks.forEach(t => { 
+                if(t.completed === undefined) t.completed = false; 
+                if (!t.records) {
+                    t.records = [];
+                    if (t.record || t.owner || t.dueDate) {
+                        t.records.push({ text: t.record || '', owner: t.owner || '', dueDate: t.dueDate || '' });
+                    } else {
+                        t.records.push({ text: '', owner: '', dueDate: '' });
+                    }
+                    delete t.record; delete t.owner; delete t.dueDate;
+                }
+                // 确保至少有一条
+                if (t.records.length === 0) t.records.push({ text: '', owner: '', dueDate: '' });
+            }); 
+            return tasks; 
+        }
+        
+        let tasks = [];
+        const createNewTask = (t) => ({
+            ...t, 
+            records: [{ text: '', owner: '', dueDate: '' }], 
+            completed: false
+        });
+
+        if (currentConfig.dailyTasks) tasks = tasks.concat(currentConfig.dailyTasks.map(t => createNewTask(t)));
+        if (currentConfig.weeklyTasks) tasks = tasks.concat(currentConfig.weeklyTasks.filter(t => t.day == dayOfWeek).map(t => createNewTask(t)));
+        if (currentConfig.biweeklyTasks && currentConfig.biweeklyTasks.length > 0) {
+            const getWeekDiff = (d1, d2) => {
+                const date1 = new Date(d1); const date2 = new Date(d2); date1.setHours(0,0,0,0); date2.setHours(0,0,0,0);
+                const day1 = date1.getDay() === 0 ? 7 : date1.getDay(); const day2 = date2.getDay() === 0 ? 7 : date2.getDay();
+                date1.setDate(date1.getDate() - day1 + 1); date2.setDate(date2.getDate() - day2 + 1);
+                return Math.floor(Math.abs(date2 - date1) / (1000 * 60 * 60 * 24 * 7));
+            };
+            if (getWeekDiff(currentConfig.biweeklyBaseDate, dateObj) % 2 === 0) { tasks = tasks.concat(currentConfig.biweeklyTasks.filter(t => t.day == dayOfWeek).map(t => createNewTask(t))); }
+        }
+        if (currentConfig.monthlyTasks) tasks = tasks.concat(currentConfig.monthlyTasks.filter(t => t.day == dayOfMonth).map(t => createNewTask(t)));
+        
+        tasks.sort((a, b) => a.time.localeCompare(b.time));
+        return tasks;
+    }
+
+    function renderCalendar(forceScrollToToday = false) {
+        const oldScrollLeft = calendarWrapper.scrollLeft; 
+        calendarWrapper.innerHTML = '';
+        const selectedMonth = monthPicker.value; if (!selectedMonth) return;
+        const [year, month] = selectedMonth.split('-').map(Number);
+        const daysInMonth = new Date(year, month, 0).getDate();
+        const todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+        const weekNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+        for (let i = 1; i <= daysInMonth; i++) {
+            const dateObj = new Date(year, month - 1, i);
+            const dateStr = year + '-' + String(month).padStart(2, '0') + '-' + String(i).padStart(2, '0');
+            const dayOfWeek = dateObj.getDay();
+            
+            const card = document.createElement('div');
+            card.className = 'day-card'; card.id = 'card_' + dateStr; if (dateStr === todayStr) card.classList.add('today'); card.dataset.date = dateStr;
+            
+            const header = document.createElement('div'); header.className = 'card-header'; header.innerHTML = `<span class="date-num">${i}日</span> ${weekNames[dayOfWeek]}`; card.appendChild(header);
+            
+            const taskList = document.createElement('div'); taskList.className = 'task-list';
+            const tasks = getTasksForDate(dateObj);
+            tasks.forEach((task, index) => { taskList.appendChild(createTaskElement(dateStr, task, index)); });
+            card.appendChild(taskList);
+            
+            const addBtn = document.createElement('button'); addBtn.className = 'btn-add-task'; addBtn.innerText = '+ 临时增加事宜'; addBtn.onclick = () => addNewTask(dateStr); card.appendChild(addBtn);
+            
+            calendarWrapper.appendChild(card);
+        }
+        checkDueTasks(); renderPendingTasks(); 
+        
+        if (forceScrollToToday) scrollToToday();
+        else if (oldScrollLeft > 0) calendarWrapper.scrollLeft = oldScrollLeft; 
+    }
+
+    // 核心：渲染包含多条记录的任务
+    function createTaskElement(dateStr, task, index) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'task-item';
+        wrapper.id = `task_${dateStr}_${index}`;
+        
+        // 判断是否有异常（只要有一条记录是异常，整个块算异常）
+        const hasException = task.records.some(r => r.text && !['无', '正常', '无异常'].includes(r.text));
+        if (task.completed) wrapper.classList.add('completed');
+        else if (hasException) wrapper.classList.add('exception');
+
+        let html = `
+            <div class="task-main-info">
+                <input type="checkbox" class="task-checkbox" ${task.completed ? 'checked' : ''} onchange="toggleTaskCompleted('${dateStr}', ${index}, this.checked)">
+                <div class="task-left-flat">
+                    <input type="text" class="task-time-input" value="${task.time}" placeholder="时间" onchange="updateTask('${dateStr}', ${index}, 'time', this.value)" title="时间段">
+                    <input type="text" class="task-name-input" value="${task.task}" placeholder="事宜" onchange="updateTask('${dateStr}', ${index}, 'task', this.value)" title="事宜">
+                </div>
+            </div>
+            <div class="task-records-area" id="records_${dateStr}_${index}">
+        `;
+
+        task.records.forEach((rec, recIndex) => {
+            const showDel = task.records.length > 1 || (rec.text || rec.owner || rec.dueDate); 
+            html += `
+                <div class="record-row" id="rec_${dateStr}_${index}_${recIndex}">
+                    <input type="text" class="task-record-input" value="${rec.text || ''}" placeholder="记录情况或异常..." oninput="checkRowException(this)" onchange="updateRecord('${dateStr}', ${index}, ${recIndex}, 'text', this.value)" title="${rec.text || ''}">
+                    <input type="text" class="task-owner-input" value="${rec.owner || ''}" placeholder="责任人" onchange="updateRecord('${dateStr}', ${index}, ${recIndex}, 'owner', this.value)" title="责任人">
+                    <input type="datetime-local" class="task-due-input" value="${rec.dueDate || ''}" title="要求完成时间" onchange="updateRecord('${dateStr}', ${index}, ${recIndex}, 'dueDate', this.value)">
+                    <button class="btn-del-record" onclick="deleteRecord('${dateStr}', ${index}, ${recIndex})" title="删除此记录" style="${showDel ? '' : 'visibility:hidden'}">✖</button>
+                </div>
+            `;
+        });
+
+        html += `
+            </div>
+            <button class="btn-add-record" onclick="addRecord('${dateStr}', ${index})" title="在此任务下增加一条子记录">+ 记录</button>
+        `;
+        
+        // 为了布局，把加号放在外面或者里面？为了让左侧对齐，使用特殊结构
+        // 修改外层结构，让左边固定，右边包含记录区和添加按钮
+        wrapper.innerHTML = `
+            <div class="task-main-info">
+                <input type="checkbox" class="task-checkbox" ${task.completed ? 'checked' : ''} onchange="toggleTaskCompleted('${dateStr}', ${index}, this.checked)">
+                <div class="task-left-flat">
+                    <input type="text" class="task-time-input" value="${task.time}" placeholder="时间" onchange="updateTask('${dateStr}', ${index}, 'time', this.value)" title="时间段">
+                    <input type="text" class="task-name-input" value="${task.task}" placeholder="事宜" onchange="updateTask('${dateStr}', ${index}, 'task', this.value)" title="事宜">
+                </div>
+            </div>
+            <div class="task-records-area">
+                ${task.records.map((rec, recIndex) => {
+                    const showDel = task.records.length > 1 || (rec.text || rec.owner || rec.dueDate); 
+                    return `
+                    <div class="record-row" id="rec_${dateStr}_${index}_${recIndex}">
+                        <input type="text" class="task-record-input" value="${rec.text || ''}" placeholder="记录情况或异常..." oninput="checkRowException(this)" onchange="updateRecord('${dateStr}', ${index}, ${recIndex}, 'text', this.value)" title="${rec.text || ''}">
+                        <input type="text" class="task-owner-input" value="${rec.owner || ''}" placeholder="责任人" onchange="updateRecord('${dateStr}', ${index}, ${recIndex}, 'owner', this.value)" title="责任人">
+                        <input type="datetime-local" class="task-due-input" value="${rec.dueDate || ''}" title="要求完成时间" onchange="updateRecord('${dateStr}', ${index}, ${recIndex}, 'dueDate', this.value)">
+                        <button class="btn-del-record" onclick="deleteRecord('${dateStr}', ${index}, ${recIndex})" title="删除此记录" style="${showDel ? '' : 'visibility:hidden'}">✖</button>
+                    </div>
+                    `;
+                }).join('')}
+                <button class="btn-add-record" onclick="addRecord('${dateStr}', ${index})">+ 增加异常记录</button>
+            </div>
+        `;
+        
+        return wrapper;
+    }
+
+    function checkRowException(input) {
+        const row = input.closest('.record-row');
+        const taskItem = input.closest('.task-item');
+        if (taskItem.classList.contains('completed')) return;
+        
+        // 重新评估整个任务块的异常状态
+        let hasException = false;
+        taskItem.querySelectorAll('.task-record-input').forEach(inp => {
+            const v = inp.value.trim();
+            if (v !== '' && !['无', '正常', '无异常'].includes(v)) hasException = true;
+        });
+        
+        if (hasException) taskItem.classList.add('exception');
+        else taskItem.classList.remove('exception');
+        
+        setTimeout(() => { checkDueTasks(); renderPendingTasks(); }, 100);
+    }
+
+    function toggleTaskCompleted(dateStr, index, isChecked) {
+        let tasks = getTasksForDate(new Date(dateStr)); 
+        tasks[index].completed = isChecked; 
+        localStorage.setItem('routing_v6_' + dateStr, JSON.stringify(tasks));
+        
+        const taskDom = document.getElementById(`task_${dateStr}_${index}`);
+        if (isChecked) { taskDom.classList.add('completed'); taskDom.classList.remove('exception'); } 
+        else { 
+            taskDom.classList.remove('completed'); 
+            const hasEx = tasks[index].records.some(r => r.text && !['无', '正常', '无异常'].includes(r.text));
+            if (hasEx) taskDom.classList.add('exception'); 
+        }
+        checkDueTasks(); renderPendingTasks();
+    }
+
+    function updateTask(dateStr, index, field, value) {
+        let tasks = getTasksForDate(new Date(dateStr)); 
+        tasks[index][field] = value; 
+        localStorage.setItem('routing_v6_' + dateStr, JSON.stringify(tasks));
+    }
+
+    function updateRecord(dateStr, taskIndex, recIndex, field, value) {
+        let tasks = getTasksForDate(new Date(dateStr));
+        tasks[taskIndex].records[recIndex][field] = value;
+        localStorage.setItem('routing_v6_' + dateStr, JSON.stringify(tasks));
+        if (field === 'dueDate' || field === 'text') {
+            checkDueTasks(); renderPendingTasks();
+        }
+    }
+
+    function addRecord(dateStr, taskIndex) {
+        let tasks = getTasksForDate(new Date(dateStr));
+        tasks[taskIndex].records.push({ text: '', owner: '', dueDate: '' });
+        localStorage.setItem('routing_v6_' + dateStr, JSON.stringify(tasks));
+        
+        // 局部渲染该任务，避免整个日历刷新导致滚动条跳动
+        const taskEl = document.getElementById(`task_${dateStr}_${taskIndex}`);
+        const newTaskEl = createTaskElement(dateStr, tasks[taskIndex], taskIndex);
+        taskEl.replaceWith(newTaskEl);
+        
+        // 滚动到刚添加的记录行
+        const newRecIndex = tasks[taskIndex].records.length - 1;
+        const newRecEl = document.getElementById(`rec_${dateStr}_${taskIndex}_${newRecIndex}`);
+        if(newRecEl) {
+            newRecEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            newRecEl.querySelector('.task-record-input').focus();
+        }
+    }
+
+    function deleteRecord(dateStr, taskIndex, recIndex) {
+        if (!confirm('确定删除这条记录吗？')) return;
+        let tasks = getTasksForDate(new Date(dateStr));
+        tasks[taskIndex].records.splice(recIndex, 1);
+        
+        // 如果删完了，补一条空的
+        if (tasks[taskIndex].records.length === 0) {
+            tasks[taskIndex].records.push({ text: '', owner: '', dueDate: '' });
+        }
+        
+        localStorage.setItem('routing_v6_' + dateStr, JSON.stringify(tasks));
+        renderCalendar(false); // 删除涉及重排，稳妥起见重绘，但保持原位
+    }
+
+    function renderPendingTasks() {
+        const pendingList = document.getElementById('pendingList'); const countBadge = document.getElementById('pendingCount'); pendingList.innerHTML = '';
+        const selectedMonth = monthPicker.value; if (!selectedMonth) return;
+        const [year, month] = selectedMonth.split('-').map(Number); const daysInMonth = new Date(year, month, 0).getDate(); const now = new Date(); let pendingTasks = [];
+
+        for (let i = 1; i <= daysInMonth; i++) {
+            const dateObj = new Date(year, month - 1, i);
+            const dateStr = year + '-' + String(month).padStart(2, '0') + '-' + String(i).padStart(2, '0');
+            const tasks = getTasksForDate(dateObj);
+            tasks.forEach((task, taskIndex) => {
+                if (task.completed) return;
+                
+                task.records.forEach((rec, recIndex) => {
+                    const hasException = rec.text && !['无', '正常', '无异常'].includes(rec.text); 
+                    const hasDueDate = !!rec.dueDate;
+                    
+                    if (hasException && hasDueDate) {
+                        const diffHours = (new Date(rec.dueDate) - now) / (1000 * 60 * 60);
+                        let urgency = 'normal'; if (diffHours < 0) urgency = 'overdue'; else if (diffHours <= 24) urgency = 'soon';
+                        pendingTasks.push({ dateStr, taskIndex, recIndex, task, rec, urgency, diffHours });
+                    }
+                });
+            });
+        }
+        pendingTasks.sort((a, b) => {
+            const scoreA = a.urgency === 'overdue' ? 0 : (a.urgency === 'soon' ? 1 : 2); const scoreB = b.urgency === 'overdue' ? 0 : (b.urgency === 'soon' ? 1 : 2);
+            if (scoreA !== scoreB) return scoreA - scoreB; return a.diffHours - b.diffHours; 
+        });
+
+        if (pendingTasks.length === 0) {
+            pendingList.innerHTML = '<div style="text-align:center; color:#999; font-size:13px; margin-top:20px;">✅ 太棒了，目前没有未完成的异常任务！</div>';
+            countBadge.innerText = '0'; countBadge.className = 'badge green'; return;
+        }
+        countBadge.innerText = pendingTasks.length; countBadge.className = 'badge';
+        pendingTasks.forEach(item => {
+            const div = document.createElement('div'); div.className = `pending-item ${item.urgency === 'overdue' ? 'overdue-item' : (item.urgency === 'soon' ? 'soon-item' : '')}`;
+            let timeText = item.dateStr; if (item.urgency === 'overdue') timeText = '<span class="urgent">已逾期</span> ' + timeText; else if (item.urgency === 'soon') timeText = '<span class="urgent">即将到期</span> ' + timeText;
+            div.innerHTML = `
+                <input type="checkbox" class="pending-checkbox" onclick="event.stopPropagation(); jumpToTaskAndToggle('${item.dateStr}', ${item.taskIndex});">
+                <div class="pending-info" onclick="jumpToRecord('${item.dateStr}', ${item.taskIndex}, ${item.recIndex})">
+                    <div class="pending-title">${item.task.task}</div>
+                    <div style="color:#cf1322; font-size:12px; margin-top:4px; font-weight:bold;">异常: ${item.rec.text}</div>
+                    <div class="pending-meta"><span>📅 ${timeText} ${item.task.time}</span>${item.rec.owner ? `<span>👤 ${item.rec.owner}</span>` : ''}<span>⏰ 期限: ${item.rec.dueDate.replace('T', ' ')}</span></div>
+                </div>
+            `;
+            pendingList.appendChild(div);
+        });
+    }
+
+    let alertTasksData = [];
+    function checkDueTasks() {
+        const now = new Date(); const alertBanner = document.getElementById('alertBanner'); const alertText = document.getElementById('alertText');
+        let overdueCount = 0; let dueSoonCount = 0; alertTasksData = [];
+        
+        document.querySelectorAll('.task-item').forEach(item => {
+            if (item.classList.contains('completed')) return;
+            
+            const dateStr = item.id.split('_')[1]; 
+            const taskIndex = parseInt(item.id.split('_')[2]);
+            const taskName = item.querySelector('.task-name-input').value;
+            
+            item.querySelectorAll('.record-row').forEach(row => {
+                const recInput = row.querySelector('.task-record-input');
+                const dueInput = row.querySelector('.task-due-input');
+                const ownerInput = row.querySelector('.task-owner-input');
+                
+                const recText = recInput.value.trim();
+                const dueVal = dueInput.value;
+                
+                if (recText !== '' && !['无', '正常', '无异常'].includes(recText)) {
+                    if (dueVal) {
+                        const dueDate = new Date(dueVal);
+                        const diffHours = (dueDate - now) / (1000 * 60 * 60);
+                        
+                        // 行高亮
+                        row.classList.remove('overdue', 'due-soon');
+                        if (diffHours < 0) { 
+                            row.classList.add('overdue'); 
+                            overdueCount++; 
+                            alertTasksData.push({ type: 'overdue', dateStr, taskIndex, taskName, recText, owner: ownerInput.value, dueStr: dueVal.replace('T', ' '), diffHours, rowId: row.id });
+                        } else if (diffHours <= 24) { 
+                            row.classList.add('due-soon'); 
+                            dueSoonCount++; 
+                            alertTasksData.push({ type: 'soon', dateStr, taskIndex, taskName, recText, owner: ownerInput.value, dueStr: dueVal.replace('T', ' '), diffHours, rowId: row.id });
+                        }
+                    }
+                } else {
+                    row.classList.remove('overdue', 'due-soon');
+                }
+            });
+        });
+        
+        if (overdueCount > 0 || dueSoonCount > 0) {
+            let msg = ''; if (overdueCount > 0) msg += `[${overdueCount}]个记录已逾期！ `; if (dueSoonCount > 0) msg += `[${dueSoonCount}]个记录将在24小时内到期！`;
+            alertText.innerText = msg + ' (点击查看详情)'; alertBanner.style.display = 'flex';
+        } else { alertBanner.style.display = 'none'; }
+    }
+    setInterval(checkDueTasks, 60000);
+
+    function scrollToToday() { 
+        if (monthPicker.value === currentMonthStr) { 
+            setTimeout(() => { 
+                const todayCard = document.getElementById('card_' + today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0')); 
+                if (todayCard) { 
+                    const scrollLeft = todayCard.offsetLeft - (calendarWrapper.clientWidth / 2) + (todayCard.clientWidth / 2); 
+                    calendarWrapper.scrollTo({ left: scrollLeft, behavior: 'smooth' }); 
+                } 
+            }, 100); 
+        } 
+    }
+
+    function deleteTask(dateStr, index) { 
+        if (!confirm('确定删除整个事宜吗？')) return; 
+        let tasks = getTasksForDate(new Date(dateStr)); 
+        tasks.splice(index, 1); 
+        localStorage.setItem('routing_v6_' + dateStr, JSON.stringify(tasks)); 
+        const oldScrollLeft = calendarWrapper.scrollLeft;
+        renderCalendar(false); 
+        calendarWrapper.scrollLeft = oldScrollLeft;
+    }
+    
+    function addNewTask(dateStr) { 
+        let tasks = getTasksForDate(new Date(dateStr)); 
+        tasks.push({ time: '', task: '', records: [{ text: '', owner: '', dueDate: '' }], completed: false }); 
+        localStorage.setItem('routing_v6_' + dateStr, JSON.stringify(tasks)); 
+        const oldScrollLeft = calendarWrapper.scrollLeft;
+        renderCalendar(false); 
+        calendarWrapper.scrollLeft = oldScrollLeft;
+
+        const newIndex = tasks.length - 1;
+        const targetTask = document.getElementById(`task_${dateStr}_${newIndex}`);
+        if (targetTask) {
+            targetTask.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            targetTask.classList.add('flash');
+            setTimeout(() => targetTask.classList.remove('flash'), 3000);
+            const timeInput = targetTask.querySelector('.task-time-input');
+            if (timeInput) timeInput.focus();
+        }
+    }
+    
+    function jumpToRecord(dateStr, taskIndex, recIndex) {
+        const targetMonth = dateStr.substring(0, 7);
+        if (monthPicker.value !== targetMonth) { 
+            monthPicker.value = targetMonth; renderCalendar(true); 
+            setTimeout(() => performScrollToRecord(dateStr, taskIndex, recIndex), 300); 
+        } else { 
+            performScrollToRecord(dateStr, taskIndex, recIndex); 
+        }
+    }
+    
+    function performScrollToRecord(dateStr, taskIndex, recIndex) { 
+        const targetCard = document.getElementById('card_' + dateStr); 
+        const targetRec = document.getElementById(`rec_${dateStr}_${taskIndex}_${recIndex}`); 
+        if (targetCard && targetRec) { 
+            const scrollLeft = targetCard.offsetLeft - (calendarWrapper.clientWidth / 2) + (targetCard.clientWidth / 2); 
+            calendarWrapper.scrollTo({ left: scrollLeft, behavior: 'smooth' }); 
+            setTimeout(() => { 
+                targetRec.scrollIntoView({ behavior: 'smooth', block: 'center' }); 
+                targetRec.classList.add('flash-record'); 
+                setTimeout(() => targetRec.classList.remove('flash-record'), 3000); 
+            }, 400); 
+        } 
+    }
+
+    function jumpToTaskAndToggle(dateStr, taskIndex) {
+        let tasks = getTasksForDate(new Date(dateStr));
+        tasks[taskIndex].completed = true;
+        localStorage.setItem('routing_v6_' + dateStr, JSON.stringify(tasks));
+        renderCalendar(false);
+    }
+
+    function openAlertListModal() {
+        if (alertTasksData.length === 0) return;
+        const container = document.getElementById('alertListContainer'); container.innerHTML = '';
+        alertTasksData.sort((a, b) => a.diffHours - b.diffHours);
+        alertTasksData.forEach(task => {
+            const div = document.createElement('div'); div.className = `alert-list-item ${task.type === 'overdue' ? 'overdue-text' : 'soon-text'}`;
+            div.innerHTML = `<div><strong>[${task.dateStr}]</strong> ${task.taskName} - ${task.recText}<div style="font-size:12px; font-weight:normal; color:#666; margin-top:4px;">责任人: ${task.owner} | 期限: ${task.dueStr}</div></div><div style="font-size: 12px; display:flex; align-items:center;">➔ 跳转</div>`;
+            div.onclick = () => { closeModal('alertListModal'); jumpToRecord(task.dateStr, task.taskIndex, task.rowId.split('_')[3]); }; 
+            container.appendChild(div);
+        });
+        document.getElementById('alertListModal').style.display = 'flex';
+    }
+
+    function openConfigModal() { document.getElementById('biweeklyBaseDate').value = currentConfig.biweeklyBaseDate; ['daily', 'weekly', 'biweekly', 'monthly'].forEach(type => { document.getElementById(type + 'Table').querySelector('tbody').innerHTML = ''; }); currentConfig.dailyTasks.forEach(t => addConfigRow('daily', t)); currentConfig.weeklyTasks.forEach(t => addConfigRow('weekly', t)); currentConfig.biweeklyTasks.forEach(t => addConfigRow('biweekly', t)); currentConfig.monthlyTasks.forEach(t => addConfigRow('monthly', t)); document.getElementById('configModal').style.display = 'flex'; }
+    function addConfigRow(type, data = {}) { const tbody = document.getElementById(type + 'Table').querySelector('tbody'); const tr = document.createElement('tr'); let selectHtml = ''; if (type === 'weekly' || type === 'biweekly') { const weekNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']; selectHtml = `<select class="cfg-day">`; weekNames.forEach((name, i) => { selectHtml += `<option value="${i}" ${data.day == i ? 'selected' : ''}>${name}</option>`; }); selectHtml += `</select>`; } else if (type === 'monthly') { selectHtml = `<select class="cfg-day">`; for (let i = 1; i <= 31; i++) { selectHtml += `<option value="${i}" ${data.day == i ? 'selected' : ''}>${i}号</option>`; } selectHtml += `</select>`; } tr.innerHTML = `${selectHtml ? `<td>${selectHtml}</td>` : ''}<td><input type="text" class="cfg-time" value="${data.time || ''}" placeholder="如 08:30-09:00"></td><td><input type="text" class="cfg-task" value="${data.task || ''}" placeholder="输入事宜名称"></td><td><button class="btn-del" onclick="this.closest('tr').remove()">✖</button></td>`; tbody.appendChild(tr); }
+    function saveConfig() { const newConfig = { dailyTasks: [], weeklyTasks: [], biweeklyBaseDate: document.getElementById('biweeklyBaseDate').value, biweeklyTasks: [], monthlyTasks: [] }; document.getElementById('dailyTable').querySelectorAll('tbody tr').forEach(tr => { const time = tr.querySelector('.cfg-time').value; const task = tr.querySelector('.cfg-task').value; if(time && task) newConfig.dailyTasks.push({time, task}); }); ['weekly', 'biweekly', 'monthly'].forEach(type => { document.getElementById(type + 'Table').querySelectorAll('tbody tr').forEach(tr => { const day = tr.querySelector('.cfg-day').value; const time = tr.querySelector('.cfg-time').value; const task = tr.querySelector('.cfg-task').value; if(time && task) newConfig[type + 'Tasks'].push({day: parseInt(day), time, task}); }); }); currentConfig = newConfig; localStorage.setItem('routing_config_v6', JSON.stringify(currentConfig)); const forceUpdate = document.getElementById('chkForceUpdate').checked; if (forceUpdate) { const keysToRemove = []; for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i); if (key.startsWith('routing_v6_' + monthPicker.value)) keysToRemove.push(key); } keysToRemove.forEach(k => localStorage.removeItem(k)); alert('模板已保存，已重置本月数据！'); } else { alert('模板已保存！'); } closeModal('configModal'); renderCalendar(true); }
+    function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+    function exportMonthCSV() { let csvContent = "\uFEFF日期,星期,时间段,事宜,是否完成,记录/异常,责任人,要求完成时间\n"; document.querySelectorAll('.day-card').forEach(card => { const dateStr = card.dataset.date; const headerText = card.querySelector('.card-header').innerText; getTasksForDate(new Date(dateStr)).forEach(t => { t.records.forEach(rec => { let recText = (rec.text||'').replace(/\n/g, ' ').replace(/,/g, '，'); let comp = t.completed ? '是' : '否'; csvContent += `${dateStr},${headerText},${t.time.replace(/,/g, '，')},${t.task.replace(/,/g, '，')},${comp},${recText},${(rec.owner||'').replace(/,/g, '，')},${rec.dueDate||''}\n`; }); }); }); const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `Routing记录_${monthPicker.value}.csv`; document.body.appendChild(link); link.click(); document.body.removeChild(link); }
+
+    monthPicker.addEventListener('change', () => renderCalendar(true));
+    loadConfig(); initPanelState(); renderCalendar(true); loadMemos();
+</script>
+</body>
+</html>
